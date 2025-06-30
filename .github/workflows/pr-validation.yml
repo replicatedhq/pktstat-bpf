@@ -18,11 +18,6 @@ jobs:
       with:
         go-version-file: go.mod
         
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang llvm libbpf-dev
-        
     - name: Validate go fmt
       run: |
         if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
@@ -42,6 +37,30 @@ jobs:
           echo "Please run 'go mod tidy' and commit the changes"
           exit 1
         fi
+
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          # - arch: aarch64
+          #   runner: ARM64-CMX
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version-file: go.mod
+        
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm libbpf-dev
         
     - name: Run make generate
       run: make generate
@@ -55,4 +74,4 @@ jobs:
           echo "Build artifact 'pktstat-bpf' not found"
           exit 1
         fi
-        echo "Build successful - artifact created"
+        echo "Build successful - artifact created for ${{ matrix.arch }}"
