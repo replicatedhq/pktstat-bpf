@@ -29,10 +29,8 @@ jobs:
         
     - name: Validate go mod tidy
       run: |
-        cp go.mod go.mod.backup
-        cp go.sum go.sum.backup
         go mod tidy
-        if ! cmp -s go.mod go.mod.backup || ! cmp -s go.sum go.sum.backup; then
+        if ! git diff --exit-code go.mod go.sum; then
           echo "go.mod or go.sum files are not up to date"
           echo "Please run 'go mod tidy' and commit the changes"
           exit 1
