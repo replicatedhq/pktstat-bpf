@@ -45,12 +45,13 @@ jobs:
         with:
           name: pktstat-bpf-x86_64
           path: ./bin
-      - name: Download aarch64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: pktstat-bpf-aarch64
-          path: ./bin
+      # - name: Download aarch64 binary
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name:pktstat-bpf-aarch64
+      #     path: ./bin
       - name: Create GitHub Release
-        run: gh release create ${{ github.ref_name }} ./bin/pktstat-bpf-x86_64 ./bin/pktstat-bpf-aarch64 --generate-notes
+        run: |
+          gh release create ${{ github.ref_name }} ./bin/pktstat-bpf-* --generate-notes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
