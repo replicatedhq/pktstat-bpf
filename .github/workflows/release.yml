@@ -15,6 +15,10 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version-file: go.mod
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev
       - run: make generate build VERSION=${{ github.ref_name }}
       - run: mv ./pktstat-bpf ./pktstat-bpf-x86_64
       - name: Upload x86_64 binary
@@ -32,6 +36,10 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version-file: go.mod
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev
       - run: make generate build VERSION=${{ github.ref_name }}
       - run: mv ./pktstat-bpf ./pktstat-bpf-aarch64
       - name: Upload aarch64 binary
