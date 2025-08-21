@@ -584,18 +584,33 @@ int cgroup_skb_egress(struct __sk_buff *skb) {
  *
  * @throws none
  */
-static inline void process_tcp(struct sock *sk, statkey *key, pid_t pid) {
+static inline int process_tcp(struct sock *sk, statkey *key, pid_t pid) {
+  // Validate socket pointer
+  if (!sk) {
+    return -1;
+  }
+
   __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+  
+  // Only process supported address families
+  if (family != AF_INET && family != AF_INET6) {
+    return -1;
+  }
 
   switch (family) {
   case AF_INET: {
     // convert to V4MAPPED address
     __be32 ip4_src = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    __be32 ip4_dst = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    
+    // Skip sockets with both addresses zero (unconnected/invalid state)
+    if (ip4_src == 0 && ip4_dst == 0) {
+      return -1;
+    }
+    
     key->srcip.s6_addr16[5] = bpf_htons(0xffff);
     __builtin_memcpy(&key->srcip.s6_addr32[3], &ip4_src, sizeof(ip4_src));
 
-    // convert to V4MAPPED address
-    __be32 ip4_dst = BPF_CORE_READ(sk, __sk_common.skc_daddr);
     key->dstip.s6_addr16[5] = bpf_htons(0xffff);
     __builtin_memcpy(&key->dstip.s6_addr32[3], &ip4_dst, sizeof(ip4_dst));
 
@@ -605,23 +620,38 @@ static inline void process_tcp(struct sock *sk, statkey *key, pid_t pid) {
     BPF_CORE_READ_INTO(&key->srcip, sk, __sk_common.skc_v6_rcv_saddr);
     BPF_CORE_READ_INTO(&key->dstip, sk, __sk_common.skc_v6_daddr);
 
+    // Check if both IPv6 addresses are unspecified (all zeros)
+    int src_empty = 1, dst_empty = 1;
+    for (int i = 0; i < 4; i++) {
+      if (key->srcip.s6_addr32[i] != 0) src_empty = 0;
+      if (key->dstip.s6_addr32[i] != 0) dst_empty = 0;
+    }
+    if (src_empty && dst_empty) {
+      return -1;
+    }
+
     break;
   }
   default: {
-    return;
+    return -1;
   }
   }
 
   __u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+  __u16 dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
+  
   if (sport == 0) {
     struct inet_sock *isk = (struct inet_sock *)sk;
     BPF_CORE_READ_INTO(&sport, isk, inet_sport);
   }
+  
   key->src_port = bpf_ntohs(sport);
-  key->dst_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+  key->dst_port = bpf_ntohs(dport);
 
   key->proto = IPPROTO_TCP;
   key->pid = pid;
+  
+  return 0;
 }
 
 /**
@@ -948,7 +978,9 @@ int BPF_KPROBE(tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  process_tcp(sk, &key, pid);
+  if (process_tcp(sk, &key, pid) != 0) {
+    return 0;  // Skip invalid socket
+  }
   update_val(&key, size);
 
   return 0;
@@ -982,7 +1014,9 @@ int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  process_tcp(sk, &key, pid);
+  if (process_tcp(sk, &key, pid) != 0) {
+    return 0;  // Skip invalid socket
+  }
   update_val(&key, copied);
 
   return 0;
@@ -1281,7 +1315,9 @@ int BPF_KPROBE(ip_local_out_fn, struct sk_buff *skb, struct net *net) {
   if (sk) {
     // Let's use the safer process_tcp function which already works in existing
     // kprobes
-    process_tcp(sk, &key, pid);
+    if (process_tcp(sk, &key, pid) != 0) {
+      return 0;  // Skip invalid socket
+    }
     update_val(&key, len);
     return 0;
   }
@@ -1328,7 +1364,9 @@ int BPF_KPROBE(ip_output_fn, struct net *net, struct sock *sk,
   if (sk) {
     // Use the existing process_tcp function which already works in other
     // kprobes
-    process_tcp(sk, &key, pid);
+    if (process_tcp(sk, &key, pid) != 0) {
+      return 0;  // Skip invalid socket
+    }
     update_val(&key, len);
     return 0;
   }
