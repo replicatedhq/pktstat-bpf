@@ -228,6 +228,12 @@ static inline int process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
   }
   }
 
+  // Skip packets with destination IP 0.0.0.0 and destination port 0
+  // This catches unconnected/invalid socket states
+  if (ip4->daddr == 0 && key->dst_port == 0) {
+    return NOK;
+  }
+
   return OK;
 }
 
@@ -306,6 +312,11 @@ static inline int process_ip6(struct ipv6hdr *ip6, void *data_end,
 
     break;
   }
+  }
+
+  // Skip packets with destination IPv6 unspecified and destination port 0
+  if (dst_empty && key->dst_port == 0) {
+    return NOK;
   }
 
   return OK;
@@ -621,6 +632,16 @@ static inline int process_tcp(struct sock *sk, statkey *key, pid_t pid) {
     // Skip sockets with both addresses zero (unconnected/invalid state)
     if (ip4_src == 0 && ip4_dst == 0) {
       return -1;
+    }
+    
+    // Also skip sockets with destination IP 0.0.0.0 and port 0 (unconnected state)
+    if (ip4_dst == 0) {
+      // Need to read ports first to check dst_port
+      __u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+      __u16 dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
+      if (bpf_ntohs(dport) == 0) {
+        return -1;
+      }
     }
     
     key->srcip.s6_addr16[5] = bpf_htons(0xffff);
