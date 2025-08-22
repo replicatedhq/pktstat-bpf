@@ -167,6 +167,11 @@ static inline int process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
     return NOK;
   }
 
+  // Skip packets with both source and destination addresses zero
+  if (ip4->saddr == 0 && ip4->daddr == 0) {
+    return NOK;
+  }
+
   // convert to V4MAPPED address
   __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
   __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4->saddr,
@@ -248,6 +253,16 @@ static inline int process_ip6(struct ipv6hdr *ip6, void *data_end,
   key->srcip = ip6->saddr;
   key->dstip = ip6->daddr;
   key->proto = ip6->nexthdr;
+
+  // Check if both IPv6 addresses are unspecified (all zeros)
+  int src_empty = 1, dst_empty = 1;
+  for (int i = 0; i < 4; i++) {
+    if (key->srcip.s6_addr32[i] != 0) src_empty = 0;
+    if (key->dstip.s6_addr32[i] != 0) dst_empty = 0;
+  }
+  if (src_empty && dst_empty) {
+    return NOK;
+  }
 
   switch (ip6->nexthdr) {
   case IPPROTO_TCP: {
