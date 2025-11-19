@@ -61,20 +61,11 @@ func processUDPPackets(ctx context.Context, reader *ringbuf.Reader) {
 
 			if len(dnsLayer.Questions) == 0 {
 				log.Printf("Skipping dns packet: no questions")
+				continue
 			}
 
-			if len(dnsLayer.Questions) > 0 && dnsLayer.Questions[0].Type == layers.DNSTypeHINFO {
-				continue // Skip HINFO queries
-			}
-
-			// Skip DNS queries for the current hostname
-			if len(dnsLayer.Questions) > 0 {
-				queryName := strings.TrimSuffix(string(dnsLayer.Questions[0].Name), ".")
-				if hostname, err := os.Hostname(); err == nil {
-					if strings.EqualFold(queryName, hostname) {
-						continue // Skip queries for current hostname
-					}
-				}
+			if shouldSkipDNSEntry(dnsLayer.Questions[0]) {
+				continue
 			}
 
 			entry := statEntry{
@@ -109,6 +100,80 @@ func processUDPPackets(ctx context.Context, reader *ringbuf.Reader) {
 			fmt.Print(outputJSON([]statEntry{entry}))
 		}
 	}
+}
+
+var specialUseDomains = []string{
+	".alt.",
+	".6tisch.arpa.",
+	".eap.arpa.",
+	".eap-noob.arpa.",
+	".home.arpa.",
+	".10.in-addr.arpa.",
+	".254.169.in-addr.arpa.",
+	".16.172.in-addr.arpa.",
+	".17.172.in-addr.arpa.",
+	".18.172.in-addr.arpa.",
+	".19.172.in-addr.arpa.",
+	".20.172.in-addr.arpa.",
+	".21.172.in-addr.arpa.",
+	".22.172.in-addr.arpa.",
+	".23.172.in-addr.arpa.",
+	".24.172.in-addr.arpa.",
+	".25.172.in-addr.arpa.",
+	".26.172.in-addr.arpa.",
+	".27.172.in-addr.arpa.",
+	".28.172.in-addr.arpa.",
+	".29.172.in-addr.arpa.",
+	".30.172.in-addr.arpa.",
+	".31.172.in-addr.arpa.",
+	".170.0.0.192.in-addr.arpa.",
+	".171.0.0.192.in-addr.arpa.",
+	".168.192.in-addr.arpa.",
+	".8.e.f.ip6.arpa.",
+	".9.e.f.ip6.arpa.",
+	".a.e.f.ip6.arpa.",
+	".b.e.f.ip6.arpa.",
+	".ipv4only.arpa.",
+	".resolver.arpa.",
+	".service.arpa.",
+	".example.",
+	".example.com.",
+	".example.net.",
+	".example.org.",
+	".invalid.",
+	".local.",
+	".localhost.",
+	".onion.",
+	".test.",
+}
+
+func shouldSkipDNSEntry(question layers.DNSQuestion) bool {
+	if question.Type == layers.DNSTypeHINFO {
+		return true
+	}
+
+	// Skip DNS queries for the current hostname
+	queryName := strings.TrimSuffix(string(question.Name), ".")
+	if hostname, err := os.Hostname(); err == nil {
+		if strings.EqualFold(queryName, hostname) {
+			return true
+		}
+	}
+
+	if externalOnly != nil && *externalOnly {
+		normalizedDomain := strings.ToLower(string(question.Name))
+		if !strings.HasSuffix(normalizedDomain, ".") {
+			normalizedDomain += "."
+		}
+
+		for _, specialDomain := range specialUseDomains {
+			if strings.HasSuffix(normalizedDomain, specialDomain) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func parseUDPPacketRecord(rec ringbuf.Record) (counterUdpPkt, gopacket.Packet, error) {

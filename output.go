@@ -68,18 +68,9 @@ func processMap(m *ebpf.Map, sortFunc func([]statEntry)) ([]statEntry, error) {
 			continue
 		}
 
-		// Check if this IP is a DNS service
-		isDNSTraffic := false
-		for _, dnsIP := range dnsServiceIPs {
-			if dstIPStr == dnsIP || srcIPStr == dnsIP {
-				isDNSTraffic = true
-				break
-			}
-		}
-
 		// Skip if external-only is enabled and destination IP is internal
 		// But always include DNS traffic even with externalOnly flag
-		if externalOnly != nil && *externalOnly && !isDNSTraffic && !isExternalIP(dstIP) {
+		if externalOnly != nil && *externalOnly && !isExternalIP(dstIP) {
 			continue
 		}
 
