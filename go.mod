@@ -2,7 +2,7 @@ module github.com/dkorunic/pktstat-bpf
 
 go 1.24.0
 
-toolchain go1.24.1
+toolchain go1.25.4
 
 require (
 	github.com/cilium/ebpf v0.18.0
