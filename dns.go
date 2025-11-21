@@ -16,7 +16,7 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-func processUDPPackets(ctx context.Context, reader *ringbuf.Reader) {
+func processUDPPackets(ctx context.Context, reader *ringbuf.Reader, outputCh chan<- []statEntry) {
 	seenDNSPackets := map[statEntry]struct{}{}
 	resetSeenPacketsTick := time.NewTicker(time.Minute)
 	defer resetSeenPacketsTick.Stop()
@@ -32,11 +32,9 @@ func processUDPPackets(ctx context.Context, reader *ringbuf.Reader) {
 			seenDNSPackets = map[statEntry]struct{}{}
 		default:
 			record, err := reader.Read()
-			if err != nil {
-				if errors.Is(err, ringbuf.ErrClosed) {
-					return
-				}
-
+			if errors.Is(err, ringbuf.ErrClosed) {
+				return
+			} else if err != nil {
 				log.Printf("Error reading UDP Packet: %v", err)
 				continue
 			}
@@ -97,7 +95,7 @@ func processUDPPackets(ctx context.Context, reader *ringbuf.Reader) {
 			}
 
 			entry.Timestamp = time.Now().UTC()
-			fmt.Print(outputJSON([]statEntry{entry}))
+			outputCh <- []statEntry{entry}
 		}
 	}
 }

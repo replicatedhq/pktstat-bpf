@@ -142,10 +142,6 @@ func main() {
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
-	// Create a ticker to process the map every second
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
 	// Set up signal handler
 	go func() {
 		s := <-signalCh
@@ -153,20 +149,44 @@ func main() {
 		cancel()
 	}()
 
-	// Create DNS lookup map and mutex for sharing between goroutines
-	dnsLookupMap := make(map[uint32]string)
-	dnsLookupMapMutex := &sync.RWMutex{}
+	wg := &sync.WaitGroup{}
+	outputCh := make(chan []statEntry)
+	go outputEvents(outputCh)
+	defer close(outputCh)
 
 	udpPktReader, err := ringbuf.NewReader(objs.UdpPkts)
 	if err != nil {
 		log.Printf("Failed to create ringbuf reader for UDP packets: %v", err)
 	} else {
 		log.Printf("Created UDP packet ringbuf reader successfully")
-		go processUDPPackets(ctx, udpPktReader)
-		defer udpPktReader.Close()
+		wg.Go(func() {
+			go func() {
+				<-ctx.Done()
+				udpPktReader.Close()
+			}()
+
+			processUDPPackets(ctx, udpPktReader, outputCh)
+		})
 	}
 
 	// Run the main loop
+	wg.Go(func() {
+		processPktCountMap(ctx, &objs, outputCh)
+	})
+
+	wg.Wait()
+}
+
+// processPktCountMap starts processing the PktCount map for connection events
+func processPktCountMap(ctx context.Context, objs *counterObjects, outputCh chan<- []statEntry) {
+	// Create a ticker to process the map every second
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	// Create DNS lookup map and mutex for sharing between goroutines
+	dnsLookupMap := make(map[uint32]string)
+	dnsLookupMapMutex := &sync.RWMutex{}
+
 	seenEntries := make(map[string]bool)
 	for {
 		select {
@@ -226,19 +246,37 @@ func main() {
 				continue
 			}
 
-			// Format output as JSON Lines
-			output := outputJSON(newEntries)
-
-			// Add newline if needed
-			if output != "" && !strings.HasSuffix(output, "\n") {
-				output += "\n"
-			}
-
-			// Write output to stdout
-			fmt.Print(output)
+			outputCh <- newEntries
 
 		case <-ctx.Done():
 			return
+		}
+	}
+}
+
+func outputEvents(ch <-chan []statEntry) {
+	numEvents := 0
+
+	for entries := range ch {
+		if maxEvents > 0 && numEvents >= maxEvents {
+			continue
+		}
+		// Format output as JSON Lines
+		output := outputJSON(entries)
+
+		// Add newline if needed
+		if output != "" && !strings.HasSuffix(output, "\n") {
+			output += "\n"
+		}
+
+		// Write output to stdout
+		fmt.Print(output)
+
+		if maxEvents > 0 {
+			numEvents += len(entries)
+			if numEvents >= maxEvents {
+				log.Printf("Max number of events has been met, no longer outputting any events")
+			}
 		}
 	}
 }

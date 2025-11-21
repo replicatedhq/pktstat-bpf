@@ -32,6 +32,7 @@ import (
 var (
 	uniqueOutput, version, help, externalOnly *bool
 	kubeconfig                                *string
+	maxEvents                                 int
 )
 
 func parseFlags() {
@@ -41,6 +42,7 @@ func parseFlags() {
 	uniqueOutput = fs.Bool('u', "unique", "if true, only show the first instance of each connection")
 	kubeconfig = fs.StringLong("kubeconfig", "", "path to kubeconfig file (if not set, dynamic kubeconfig discovery is used)")
 	externalOnly = fs.BoolDefault('e', "external", true, "if true, only show traffic to external destinations")
+	maxEventsPtr := fs.Int('m', "max-events", 10000, "max number of events to output, 0 for unlimited")
 	version = fs.BoolLong("version", "display program version")
 
 	var err error
@@ -63,4 +65,6 @@ func parseFlags() {
 
 		os.Exit(0)
 	}
+
+	maxEvents = *maxEventsPtr
 }
