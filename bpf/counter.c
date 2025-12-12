@@ -714,7 +714,7 @@ static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
   key->pid = pid;
 
   // Only send likley DNS packets back to user space for processing
-  if (key->src_port == 53 || key->dst_port == 53) {
+  if (key->dst_port == 53) {
     udp_pkt *data;
     data = bpf_ringbuf_reserve(&udp_pkts, sizeof(udp_pkt), 0);
     if (!data) {
