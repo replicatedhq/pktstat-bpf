@@ -654,6 +654,34 @@ static inline int process_tcp(struct sock *sk, statkey *key, pid_t pid) {
   return 0;
 }
 
+  static inline void process_dns_packet(struct sk_buff *skb, statkey *key, size_t data_start) {
+  // Only send likley DNS packets back to user space for processing
+  if (key->dst_port != 53) {
+    return;
+  }
+  size_t buflen = BPF_CORE_READ(skb, len);
+  if (buflen > MAX_PKT) {
+      buflen = MAX_PKT;
+  }
+
+  udp_pkt *data;
+  data = bpf_ringbuf_reserve(&udp_pkts, sizeof(udp_pkt), 0);
+  if (!data) {
+    return;
+  }
+
+  data->pid = key->pid;
+  data->src_port = key->src_port;
+  data->dst_port = key->dst_port;
+
+  unsigned char *pktdata = BPF_CORE_READ(skb, data) + data_start;
+  __builtin_memcpy(&data->srcip, &key->srcip, sizeof(struct in6_addr));
+  __builtin_memcpy(&data->dstip, &key->dstip, sizeof(struct in6_addr));
+  __builtin_memcpy(&data->comm, &key->comm, sizeof(data->comm));
+  bpf_core_read(&data->pkt, buflen, pktdata);
+  bpf_ringbuf_submit(data, 0);
+}
+
 /**
  * Process UDP socket information from a sk_buff and populate the key
  * structure.
@@ -669,19 +697,18 @@ static inline int process_tcp(struct sock *sk, statkey *key, pid_t pid) {
  *
  * @throws none
  */
-static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
-                                    pid_t pid) {
+static inline void process_udp_recv(struct sk_buff *skb, statkey *key, pid_t pid, __u16 proto, bool offset_data_start) {
   struct udphdr *udphdr =
       (struct udphdr *)(BPF_CORE_READ(skb, head) +
                         BPF_CORE_READ(skb, transport_header));
 
-  __u16 proto = BPF_CORE_READ(skb, protocol);
-
-  switch (bpf_ntohs(proto)) {
+  size_t ip_header_size;
+  switch (proto) {
   case ETH_P_IP: {
     struct iphdr *iphdr = (struct iphdr *)(BPF_CORE_READ(skb, head) +
                                            BPF_CORE_READ(skb, network_header));
 
+    ip_header_size = sizeof(*iphdr);
     // convert to V4MAPPED address
     __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
     key->srcip.s6_addr16[5] = bpf_htons(0xffff);
@@ -698,6 +725,7 @@ static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
         (struct ipv6hdr *)(BPF_CORE_READ(skb, head) +
                            BPF_CORE_READ(skb, network_header));
 
+    ip_header_size = sizeof(*iphdr);
     BPF_CORE_READ_INTO(&key->srcip, iphdr, saddr);
     BPF_CORE_READ_INTO(&key->dstip, iphdr, daddr);
 
@@ -709,33 +737,14 @@ static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
 
   key->src_port = bpf_ntohs(BPF_CORE_READ(udphdr, source));
   key->dst_port = bpf_ntohs(BPF_CORE_READ(udphdr, dest));
-
   key->proto = IPPROTO_UDP;
   key->pid = pid;
-
-  // Only send likley DNS packets back to user space for processing
-  if (key->dst_port == 53) {
-    udp_pkt *data;
-    data = bpf_ringbuf_reserve(&udp_pkts, sizeof(udp_pkt), 0);
-    if (!data) {
-      return;
-    }
-
-    data->pid = pid;
-    data->src_port = key->src_port;
-    data->dst_port = key->dst_port;
-    unsigned char *pktdata = BPF_CORE_READ(skb, data);
-    size_t buflen = BPF_CORE_READ(skb, len);
-    if (buflen > MAX_PKT) {
-        buflen = MAX_PKT;
-    }
-
-    __builtin_memcpy(&data->srcip, &key->srcip, sizeof(struct in6_addr));
-    __builtin_memcpy(&data->dstip, &key->dstip, sizeof(struct in6_addr));
-    __builtin_memcpy(&data->comm, &key->comm, sizeof(data->comm));
-    bpf_core_read(&data->pkt, buflen, pktdata);
-    bpf_ringbuf_submit(data, 0);
+  size_t data_start = 0;
+  if (offset_data_start == true) {
+    data_start = ip_header_size + sizeof(*udphdr);
   }
+
+  process_dns_packet(skb, key, data_start);
 }
 
 /**
@@ -841,6 +850,17 @@ static inline size_t process_icmp6(struct sk_buff *skb, statkey *key,
  * type set to UDP and the associated process ID. It also returns the length
  * of the UDP message.
  *
+ * The sk_buff at this point does not have it's data pointer adjusted to point
+ * at the "user data" portion of the packet's payload. It is still pointing at
+ * the network header. Additionally, some things like the Protocol is not set
+ * on the sk_buff struct.
+ *
+ * This is quite different from the state of the sk_buff we receive in the 
+ * skb_consume_udp probe. That is a bit "nicer" since it's head and data pointers
+ * point to the network header and user data sections of the payload respectively.
+ *
+ * Because of this difference, we have to parse the packet's payload differently.
+ *
  * @throws none
  */
 static inline size_t process_udp_send(struct sk_buff *skb, statkey *key,
@@ -849,9 +869,27 @@ static inline size_t process_udp_send(struct sk_buff *skb, statkey *key,
       (struct udphdr *)(BPF_CORE_READ(skb, head) +
                         BPF_CORE_READ(skb, transport_header));
 
-  process_udp_recv(skb, key, pid);
   size_t msglen = BPF_CORE_READ(udphdr, len);
 
+  // check the first 4 bits of the packet to determine the ip version
+  unsigned char *pktdata = BPF_CORE_READ(skb, data);
+  unsigned char ip_version;
+  // copy over the first byte of the payload, then only look at the first 4 bits
+  bpf_core_read(&ip_version, sizeof(ip_version), pktdata);
+  ip_version = ip_version >> 4;
+  __u16 proto;
+  switch(ip_version) {
+    case 4:
+      proto = ETH_P_IP;
+      break;
+    case 6:
+      proto = ETH_P_IPV6;
+      break;
+    default:
+      return msglen;
+  }
+
+  process_udp_recv(skb, key, pid, proto, true);
   return msglen;
 }
 
@@ -1062,11 +1100,6 @@ int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
  */
 SEC("kprobe/ip_send_skb")
 int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
-  __u16 protocol = BPF_CORE_READ(skb, protocol);
-  if (protocol != IPPROTO_UDP) {
-    return 0;
-  }
-
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
@@ -1106,7 +1139,8 @@ int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  process_udp_recv(skb, &key, pid);
+  __u16 proto = BPF_CORE_READ(skb, protocol);
+  process_udp_recv(skb, &key, pid, proto, 0);
   update_val(&key, len);
 
   return 0;
