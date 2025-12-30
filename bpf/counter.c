@@ -655,7 +655,7 @@ static inline int process_tcp(struct sock *sk, statkey *key, pid_t pid) {
 }
 
   static inline void process_dns_packet(struct sk_buff *skb, statkey *key, size_t data_start) {
-  // Only send likley DNS packets back to user space for processing
+  // Only send likeley DNS packets back to user space for processing
   if (key->dst_port != 53) {
     return;
   }
